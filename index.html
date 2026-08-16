@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="day" style="color-scheme: light">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Satelite</title>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script>
+      // Apply UI mode before React paints (pairs with Rust window size on recreate).
+      try {
+        var m = localStorage.getItem("satelite.uiMode");
+        if (m === "simple" || m === "pro") {
+          document.documentElement.dataset.uiMode = m;
+        }
+      } catch (e) {}
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

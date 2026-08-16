@@ -1,0 +1,17 @@
+# Rust
+server/target/
+**/target/
+
+# Node
+node_modules/
+**/node_modules/
+
+# Logs & local files
+install-log.txt
+*.log
+*.bak
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

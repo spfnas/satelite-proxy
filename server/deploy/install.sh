@@ -2,26 +2,30 @@
 # ============================================================================
 # Satelite Proxy — one-click Linux server installer (root)
 #
-#  - copies the release binary + resources + frontend dist into /opt/satelite
-#  - creates a dedicated system user (satelite)
-#  - installs a systemd unit (satelite-web.service)
-#  - TUN: creates /dev/net/tun and grants the service CAP_NET_ADMIN so
-#    sing-box TUN mode works
-#  - Transparent: optionally installs nftables rules (redirect+tproxy) so the
-#    box can act as a LAN gateway / 旁路由. Requires SATELITE_TRANSPARENT=1
-#    and the LAN-facing interface name in SATELITE_LAN_IF (auto-detected).
-#  - binds 0.0.0.0:8268 by default; override with SATELITE_WEB_ADDR
+# 用法（远程一键，无需 clone 源码 / Rust 工具链）：
+#   curl -fsSL https://raw.githubusercontent.com/spfnas/satelite-proxy/main/server/deploy/install.sh | sudo bash
 #
-# Usage:
-#   sudo bash install.sh
-#   # enable transparent-proxy (旁路由) after install:
-#   sudo SATELITE_TRANSPARENT=1 SATELITE_LAN_IF=eth0 bash install.sh
+# 或源码树模式（本地已有编译产物时自动复用，无需下载）：
+#   sudo bash server/deploy/install.sh
 #
-# Optional env overrides:
-#   SATELITE_WEB_ADDR=0.0.0.0:8268
+# 功能：
+#   - 自动下载对应架构的 GitHub Release 包（bin + dist + 透明代理脚本）
+#   - 把 release 包解压到 /opt/satelite
+#   - 创建专用系统用户 satelite
+#   - 安装 systemd 单元 satelite-web.service
+#   - TUN：创建 /dev/net/tun 并授予 CAP_NET_ADMIN，sing-box TUN 模式可用
+#   - 透明代理（旁路由）：可选安装 nftables 规则（redirect+tproxy），
+#     需 SATELITE_TRANSPARENT=1 + LAN 网卡名（默认自动检测）
+#   - 默认监听 0.0.0.0:8268，可用 SATELITE_WEB_ADDR 覆盖
+#
+# 可选环境变量：
+#   INSTALL_DIR=/opt/satelite
 #   SATELITE_DATA_DIR=/var/lib/satelite
-#   SATELITE_TRANSPARENT=1        # also install nftables transparent rules
-#   SATELITE_LAN_IF=eth0          # LAN-facing interface (default: auto-detect)
+#   SATELITE_WEB_ADDR=0.0.0.0:8268
+#   SATELITE_TRANSPARENT=1
+#   SATELITE_LAN_IF=eth0
+#   RELEASE_TAG=latest            # 指定版本（默认 latest）
+#   RELEASE_URL=...               # 完全覆盖下载地址（离线/内网场景）
 # ============================================================================
 set -euo pipefail
 
@@ -38,16 +42,31 @@ WEB_ADDR="${SATELITE_WEB_ADDR:-0.0.0.0:8268}"
 SERVICE_USER="satelite"
 TRANSPARENT="${SATELITE_TRANSPARENT:-0}"
 LAN_IF="${SATELITE_LAN_IF:-}"
+RELEASE_TAG="${RELEASE_TAG:-latest}"
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64)  ARCH="x86_64" ;;
+  aarch64|arm64) ARCH="aarch64" ;;
+  *) echo "!! 不支持架构: $ARCH（仅 x86_64 / aarch64）" >&2; exit 1 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_SRC="${SCRIPT_DIR}/../target/release/satelite-web"
-RES_SRC="${SCRIPT_DIR}/../resources"
-DIST_SRC="${SCRIPT_DIR}/../../dist"
-NFT_SRC="${SCRIPT_DIR}/nft-transparent.sh"
+PKG_URL="${RELEASE_URL:-https://github.com/spfnas/satelite-proxy/releases/download/${RELEASE_TAG}/satelite-linux-${ARCH}.tar.gz}"
+PKG_NAME="satelite-linux-${ARCH}.tar.gz"
 
-echo "==> 安装到 $INSTALL_DIR (数据 $DATA_DIR, 监听 $WEB_ADDR)"
+echo "==> 安装到 $INSTALL_DIR (数据 $DATA_DIR, 监听 $WEB_ADDR, arch=$ARCH)"
 
 # ---------- 依赖检查 ----------
+if ! command -v curl >/dev/null 2>&1; then
+  echo "缺少 curl, 尝试安装..."
+  apt-get update -qq && apt-get install -y -qq curl >/dev/null
+fi
+if ! command -v tar >/dev/null 2>&1; then
+  echo "缺少 tar, 尝试安装..."
+  apt-get update -qq && apt-get install -y -qq tar >/dev/null
+fi
 if ! command -v setcap >/dev/null 2>&1; then
   echo "缺少 libcap2-bin (setcap), 尝试安装..."
   apt-get update -qq && apt-get install -y -qq libcap2-bin >/dev/null
@@ -58,24 +77,44 @@ if ! command -v nft >/dev/null 2>&1; then
 fi
 
 # ---------- 目录 ----------
-mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/resources" "$DATA_DIR/logs" "$INSTALL_DIR/deploy"
-cp -f "$BIN_SRC" "$INSTALL_DIR/bin/$APP_NAME"
+mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/dist" "$INSTALL_DIR/deploy" "$DATA_DIR/logs"
+
+# ---------- 获取文件（源码树 / 远程 release 二选一）----------
+if [ -x "$BIN_SRC" ]; then
+  echo "==> 检测到本地编译产物, 复用: $BIN_SRC"
+  cp -f "$BIN_SRC" "$INSTALL_DIR/bin/$APP_NAME"
+  chmod 755 "$INSTALL_DIR/bin/$APP_NAME"
+  DIST_SRC="${SCRIPT_DIR}/../../dist"
+  if [ -d "$DIST_SRC" ] && [ -f "$DIST_SRC/index.html" ]; then
+    cp -rf "$DIST_SRC/." "$INSTALL_DIR/dist/"
+  fi
+  NFT_SRC="${SCRIPT_DIR}/nft-transparent.sh"
+  if [ -f "$NFT_SRC" ]; then
+    cp -f "$NFT_SRC" "$INSTALL_DIR/deploy/"
+    chmod 755 "$INSTALL_DIR/deploy/nft-transparent.sh"
+  fi
+else
+  echo "==> 下载 release 包: $PKG_URL"
+  TMP_PKG="$(mktemp)"
+  if curl -fL --connect-timeout 15 --max-time 300 "$PKG_URL" -o "$TMP_PKG"; then
+    :
+  else
+    echo "!! 直连下载失败，尝试 GitHub 加速镜像..." >&2
+    MIRROR_URL="https://ghfast.top/${PKG_URL}"
+    curl -fL --connect-timeout 20 --max-time 300 "$MIRROR_URL" -o "$TMP_PKG"
+  fi
+  tar xzf "$TMP_PKG" -C "$INSTALL_DIR"
+  rm -f "$TMP_PKG"
+  echo "==> release 包已解压到 $INSTALL_DIR"
+fi
+
+# ---------- 安装后完整性检查 ----------
+if [ ! -x "$INSTALL_DIR/bin/$APP_NAME" ]; then
+  echo "!! $INSTALL_DIR/bin/$APP_NAME 不存在, 安装中止" >&2
+  exit 1
+fi
 chmod 755 "$INSTALL_DIR/bin/$APP_NAME"
-
-if [ -d "$RES_SRC" ]; then
-  cp -rf "$RES_SRC/." "$INSTALL_DIR/resources/"
-fi
-if [ -d "$DIST_SRC" ] && [ -f "$DIST_SRC/index.html" ]; then
-  mkdir -p "$INSTALL_DIR/dist"
-  cp -rf "$DIST_SRC/." "$INSTALL_DIR/dist/"
-fi
-
-# 附带透明代理 nft 脚本（随包部署，供后续手动启停）
-if [ -f "$NFT_SRC" ]; then
-  cp -f "$NFT_SRC" "$INSTALL_DIR/deploy/nft-transparent.sh"
-  chmod 755 "$INSTALL_DIR/deploy/nft-transparent.sh"
-  echo "==> nft-transparent.sh 已部署到 $INSTALL_DIR/deploy/"
-fi
+chmod 755 "$INSTALL_DIR/deploy/nft-transparent.sh" 2>/dev/null || true
 
 # ---------- 专用用户 ----------
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -109,7 +148,6 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 Environment=SATELITE_DATA_DIR=$DATA_DIR
-Environment=SATELITE_RESOURCE_DIR=$INSTALL_DIR/resources
 Environment=SATELITE_WEB_DIST=$INSTALL_DIR/dist
 Environment=SATELITE_WEB_ADDR=$WEB_ADDR
 ExecStart=$INSTALL_DIR/bin/$APP_NAME

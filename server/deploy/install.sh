@@ -51,9 +51,21 @@ case "$ARCH" in
   *) echo "!! 不支持架构: $ARCH（仅 x86_64 / aarch64）" >&2; exit 1 ;;
 esac
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_SRC="${SCRIPT_DIR}/../target/release/satelite-web"
-PKG_URL="${RELEASE_URL:-https://github.com/spfnas/satelite-proxy/releases/download/${RELEASE_TAG}/satelite-linux-${ARCH}.tar.gz}"
+# curl | bash 管道模式下 BASH_SOURCE 为空, 必须保护（set -u 下直接引用会崩）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
+if [ -x "$SCRIPT_DIR/../target/release/satelite-web" ]; then
+  BIN_SRC="$SCRIPT_DIR/../target/release/satelite-web"
+else
+  BIN_SRC=""
+fi
+# latest 用 Releases "latest" 固定路径, 指定 tag 用 download/<tag> 路径
+if [ -n "$RELEASE_URL" ]; then
+  PKG_URL="$RELEASE_URL"
+elif [ "$RELEASE_TAG" = "latest" ]; then
+  PKG_URL="https://github.com/spfnas/satelite-proxy/releases/latest/download/satelite-linux-${ARCH}.tar.gz"
+else
+  PKG_URL="https://github.com/spfnas/satelite-proxy/releases/download/${RELEASE_TAG}/satelite-linux-${ARCH}.tar.gz"
+fi
 PKG_NAME="satelite-linux-${ARCH}.tar.gz"
 
 echo "==> 安装到 $INSTALL_DIR (数据 $DATA_DIR, 监听 $WEB_ADDR, arch=$ARCH)"
@@ -80,7 +92,7 @@ fi
 mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/dist" "$INSTALL_DIR/deploy" "$DATA_DIR/logs"
 
 # ---------- 获取文件（源码树 / 远程 release 二选一）----------
-if [ -x "$BIN_SRC" ]; then
+if [ -n "$BIN_SRC" ] && [ -x "$BIN_SRC" ]; then
   echo "==> 检测到本地编译产物, 复用: $BIN_SRC"
   cp -f "$BIN_SRC" "$INSTALL_DIR/bin/$APP_NAME"
   chmod 755 "$INSTALL_DIR/bin/$APP_NAME"

@@ -59,7 +59,7 @@ else
   BIN_SRC=""
 fi
 # latest 用 Releases "latest" 固定路径, 指定 tag 用 download/<tag> 路径
-if [ -n "$RELEASE_URL" ]; then
+if [ -n "${RELEASE_URL:-}" ]; then
   PKG_URL="$RELEASE_URL"
 elif [ "$RELEASE_TAG" = "latest" ]; then
   PKG_URL="https://github.com/spfnas/satelite-proxy/releases/latest/download/satelite-linux-${ARCH}.tar.gz"
